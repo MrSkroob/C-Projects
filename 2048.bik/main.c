@@ -1,0 +1,480 @@
+#include <math.h>
+#include <time.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+#define RGB_3(r, g, b)\
+  (r << 16) |	      \
+  (g << 8) |	      \
+  (b << 0)
+
+
+int const BOARD_TOP_X = 40;
+int const BOARD_TOP_Y = 0;
+int const BOARD_WIDTH = 240;
+
+int const TILE_WIDTH = 50; // leaving a 1 pixel gap between tiles
+int const FOURTH_240 = 60;
+
+// NOTE, SCREEN SIZE IS 320x240
+
+typedef struct Tiles {
+  int tile_type;
+  int board_index;
+} Tile;
+
+
+void EmptySpace(Tile *board, int index) {
+  // fills up the board[index] with an empty tile.
+  Tile empty;
+  empty.board_index = index;
+  empty.tile_type = 0;
+  board[index] = empty;
+}
+
+
+void InitialiseEmptyBoard(Tile *board) {
+  for (int i = 0; i < 16; i++) {
+    EmptySpace(board, i);
+  }
+}
+
+
+
+// matrix utlities
+void Transpose(Tile* board) {
+  Tile new_board[16];
+  InitialiseEmptyBoard(new_board);
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      int new_index = i * 4 + j;
+      int old_index = j * 4 + i;
+      new_board[new_index] = board[old_index];
+      new_board[new_index].board_index = new_index;
+      EmptySpace(board, old_index);
+    }
+  }
+  
+  for (int i = 0; i < 16; i++) {
+    board[i] = new_board[i];
+  }
+}
+
+
+void Reverse(Tile* board) {
+  Tile new_board[16];
+  InitialiseEmptyBoard(new_board);
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      int old_index = i * 4 + j;
+      int new_index = i * 4 + 3 - j;
+      new_board[new_index] = board[old_index];
+      new_board[new_index].board_index = new_index;
+      EmptySpace(board, old_index);
+    }
+  }
+
+  for (int i = 0; i < 16; i++) {
+    board[i] = new_board[i];
+  }
+}
+
+
+void DrawBoardBackground(Channel io, Color colour) {
+  BeginDraw(io);
+
+  FillRect(io, colour, BOARD_TOP_X, BOARD_TOP_Y, BOARD_TOP_X + BOARD_WIDTH, BOARD_TOP_Y + BOARD_WIDTH);
+  
+  EndDraw(io);
+}
+
+
+void DrawTile(Channel io, int x, int y, int index, Color colour) {
+  BeginDraw(io);
+  FillRect(io, colour, x, y, x + TILE_WIDTH, y + TILE_WIDTH);
+  
+  if (index > 0) {
+    char snum[16];
+    int score = Pow(2, index);
+    sprintf(snum, "%d", score);
+    
+    int length = strlen(snum);
+
+    int x_text = x + 28 - (length * 5);
+    int y_text = y + 28;
+    
+    if (index > 2) {
+      BeginDrawText(io, Mono11, White, x_text, y_text);
+    }
+    else {
+      BeginDrawText(io, Mono11, Black, x_text, y_text);
+    }
+    PutText(io, snum);
+    EndDrawText(io);
+  }
+  
+  EndDraw(io);
+}
+
+
+int randint(int lower, int upper) {
+  // returns a random integer between the (inclusive) lower and (inclusive) upper bounds
+  return (rand() % (upper - lower + 1) + lower);
+}
+
+
+Bool ShouldSpawnFour(void) {
+  // returns whether the square should be a 4 or 2
+  return randint(1, 10) == 9;
+}
+
+
+void DrawTileOnBoard(Channel io, Tile tile) {
+  // wrapper function for DrawTile. Takes in an index instead of a precise
+  // x and y so my brain doesn't want to spontaneously combust :)
+
+  
+  // static Color colours[13] = {0};
+
+  
+  
+  static Color colours[13] = {
+    RGB_3(204, 192, 179), // empty
+    RGB_3(238, 228, 218), // 2
+    RGB_3(237, 224, 200), // 4
+    RGB_3(242, 177, 121), // 8
+    RGB_3(245, 149, 99), // 16
+    RGB_3(246, 124, 95), // 32
+    RGB_3(246, 94, 59), // 64
+    RGB_3(237, 207, 114), // 128
+    RGB_3(237, 204, 97), // 256
+    RGB_3(237, 200, 80), // 512
+    RGB_3(237, 197, 63), // 1028
+    RGB_3(237, 194, 46), // 2048
+    0 // >2048
+  };
+  
+
+  // Tile colours (fill)
+  int tile_index = tile.tile_type;
+
+  if (tile_index > 12) { // clamp
+    tile_index = 12;
+  }
+  
+  int index = tile.board_index;
+
+  // convert the index into an x and y coordinate used by the
+  // drawtile procedure
+  int x = 45 + FOURTH_240 * (index / 4);
+  int y = FOURTH_240 * (index % 4) + 5;
+  
+  DrawTile(io, x, y, tile_index, colours[tile_index]);
+}
+
+
+int TwoDToOneD(int collumn, int row) {
+  int index = collumn + row * 4;
+  return index;
+}
+
+
+int* OneDToTwoD(int index) {
+  // returns table.
+  // [0] = collumn
+  // [1] = row
+  static int result[2];
+  result[0] = index % 4;
+  result[1] = floor(index / 4);
+  
+  return result;
+}
+
+
+void SetValueToBoard(Tile *board, int x, int y, Tile value) {
+  // converts given x and y coordinates into an index 2D -> 1D.
+  int index = TwoDToOneD(x, y);
+  board[index] = value;
+}
+
+
+int SpawnTile(Channel io, Tile *board, int spawn_tries) {
+  // function which spawns tiles in random positions on the board
+  // will spawn 1-3 tiles
+  // returns -1 if it couldn't spend any tiles (lose condition)
+  // returns 1 if any tile was spawned
+  int empty_spaces[16] = {0};
+  int n_spaces = 0;
+
+  // find all empty spaces on the board
+  for (int i = 0; i < 16; i++) {
+    if (board[i].tile_type == 0) {
+      // empty space
+      empty_spaces[n_spaces] = i;
+      n_spaces++;
+    }
+  }
+
+  if (n_spaces == 0) {
+    // fail, no spaces found.
+    return -1;
+  }
+
+  for (int i = 0; i < n_spaces; i++) {
+    if (spawn_tries == 0) {
+      // spawned all available tiles, exit.
+      break;
+    }
+    // choose a random empty index
+    int index = randint(0, n_spaces - 1);
+    
+    int index_chosen = empty_spaces[index];
+    // generate tile
+    
+    Tile tile;
+    tile.board_index = index_chosen;
+
+    if (ShouldSpawnFour()) {
+      tile.tile_type = 2;
+    }
+    else {
+      tile.tile_type = 1;
+    }
+
+    board[index_chosen] = tile;
+
+    // shift empty indexes to the next index, overriding the current one. 
+    for (int j = index; j < n_spaces; j++) {
+      empty_spaces[j - 1] = empty_spaces[j];
+      empty_spaces[j] = 0;
+    }
+    
+    spawn_tries--;
+  }
+  return 1;
+}
+
+
+void DrawBoard(Channel io, Tile* board) {
+  // draws all the squares in the given board array
+  for (int i = 0; i < 16; i++) {
+    // convert index to 2d position
+    Tile tile = board[i];
+    DrawTileOnBoard(io, tile);
+  }
+}
+
+
+Bool Compress(Tile* board) {
+  Bool changed = False;
+  Tile new_board[16];
+  InitialiseEmptyBoard(new_board);
+  
+  for (int i = 0; i < 4; i++) {
+    int pos = 0;
+    
+    for (int j = 0; j < 4; j++) {
+      int old_index = i * 4 + j;
+      int new_index = i * 4 + pos;
+      
+      if (board[old_index].tile_type != 0) {
+
+	
+	new_board[new_index] = board[old_index];
+	new_board[new_index].board_index = new_index;
+
+	if (j != pos) {
+	  changed = True;
+	}
+	
+	pos++;
+      }
+    }
+  }
+
+  for (int i = 0; i < 16; i++) {
+    board[i] = new_board[i];
+  }
+  return changed;
+}
+
+Bool Merge(Tile* board) {
+  Bool changed = False;
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 3; j++) {
+      int index = i * 4 + j;
+      int next_index = index + 1;
+      if (board[index].tile_type == board[next_index].tile_type && board[index].tile_type != 0) {
+	board[next_index].tile_type += 1;
+	EmptySpace(board, index);
+	changed = True;
+      }
+    }
+  }
+  return changed;
+}
+
+Bool ShiftDown(Tile* board) { // up
+  Bool changed = Compress(board);
+  Bool changed2 = Merge(board);
+  Compress(board);
+  return changed || changed2;
+}
+
+Bool ShiftUp(Tile* board) { // down
+  Reverse(board);
+  Bool changed = ShiftDown(board);
+  Reverse(board);
+  return changed;
+}
+
+
+Bool ShiftLeft(Tile* board) { // left
+  Transpose(board);
+  Bool changed = ShiftDown(board);
+  Transpose(board);
+  return changed;
+}
+
+Bool ShiftRight(Tile* board) { // right
+  Transpose(board);
+  Bool changed = ShiftUp(board);
+  Transpose(board);
+  return changed;
+}
+
+
+Bool ShiftBoard(Tile* board, int param) {
+  // shifts all the tiles as far left/right/up/down as possible.
+  // 0 = left
+  // 1 = right
+  // 2 = up
+  // 3 = down
+  Bool success = False;
+  
+  switch(param) {
+  case 0:
+    success = ShiftLeft(board);
+    break;
+  case 1:
+    success = ShiftRight(board);
+    break;
+  case 2:
+    success = ShiftUp(board);
+    break;
+  case 3:
+    success = ShiftDown(board);
+    break;
+  default:
+    break;
+  }
+  
+  return success;
+}
+
+
+int GameState(Tile* board) {
+  // returns the state of the board
+  // 0 - default (continue playing)
+  // 1 - lost
+  // 2 - won
+
+  int state = 0;
+
+  for (int i = 0; i < 16; i++) {
+    if (board[i].tile_type == 11) {return 2;}
+  }
+
+  Tile board_clone[16] = {};
+
+  for (int i = 0; i < 4; i++) {
+
+    // we try every possible direction and apply that to a cloned board. 
+    
+    for (int j = 0; j < 16; j++) {
+      board_clone[j] = board[j];
+    }
+
+    // if we succeed in moving, then we return 0
+    if (ShiftBoard(board_clone, i)) {return 0;}
+  }
+  
+  return 1;
+}
+
+
+void Main(Channel io) {
+  // make random actually random every time
+  srand(time(NULL));
+
+  // printf("sizeof colour: %ld\n", sizeof(Color));
+  
+  // constant colours
+  Color BACKGROUND = Rgb(253, 222, 179);
+  Color BOARD_BACKGROUND = Rgb(119, 110, 101);
+
+  
+  
+  // title and logo(!)
+
+  // draw background and frame
+  BeginDraw(io);
+  FillFrame(io, BACKGROUND);
+  EndDraw(io);
+  
+  DrawBoardBackground(io, BOARD_BACKGROUND);
+
+  // random tile for now
+  Tile board[16] = {};
+  InitialiseEmptyBoard(board);
+  SpawnTile(io, board, 1);
+  
+  Bool should_spawn = True;
+  
+  while (True) {
+    if (should_spawn) {
+      SpawnTile(io, board, 1);
+    };
+    
+    DrawBoard(io, board);
+
+    int board_state = GameState(board);
+    switch(board_state) {
+    case 1:
+      // booo D:
+      PutText(Trace, "You lost!");
+      break;
+    case 2:
+      // hooray!
+      PutText(Trace, "You won!");
+      break;
+    default:
+      // do nothing
+      break;
+    }
+    
+    WaitForKeyPress(io);
+
+    // input handling
+
+    int direction = -1;
+
+    if (IsKeyDown(io, KeyLeft)) {
+      direction = 0;
+    }
+    else if (IsKeyDown(io, KeyRight)) {
+      direction = 1;
+    }
+    else if (IsKeyDown(io, KeyUp)) {
+      direction = 2;
+    }
+    else if (IsKeyDown(io, KeyDown)) {
+      direction = 3;
+    }
+
+    if (direction != -1) {
+      should_spawn = ShiftBoard(board, direction);
+    }
+  }
+}
